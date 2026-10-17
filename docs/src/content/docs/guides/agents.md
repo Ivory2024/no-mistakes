@@ -159,6 +159,7 @@ The CI monitor stays live in the background after checks pass, and when it sees 
 On GitHub, a clean PR whose base requires branches to be up to date (`mergeStateStatus: BEHIND`) still reports `checks-passed` and waits for a human to bring it up to date; only when the repository opts into [`ci.rebase_behind`](/no-mistakes/reference/repo-config/#cirebase_behind) does the monitor give it the same rebase, once its checks are green and the base has held still for one poll.
 A PR that is merely behind a base without that rule needs nothing, since the platform merges it.
 The one exception is when that monitor is no longer running - the PR was closed, the run was aborted or superseded, it idle-timed-out, or its auto-fix attempts were exhausted - in which case see [`no-mistakes rerun`](/no-mistakes/reference/cli/#no-mistakes-rerun) for the restart conditions.
+A run that failed before Push only because an agent invocation failed - a provider error, a usage limit, or the agent process exiting - can instead continue from its failed step with [`no-mistakes axi retry --run <id>`](/no-mistakes/reference/cli/#no-mistakes-axi-retry); it refuses with the failed proof whenever continuing is not provably safe.
 The agent must not use `no-mistakes axi run` to refresh a still-active PR: after `checks-passed` it reattaches to the running monitor with HEAD unchanged and returns the monitor output without rebasing.
 
 In task-first mode, if the repo is on the default branch, the skill tells the agent to create a feature branch before committing because the gate validates committed history on a non-default branch.
@@ -178,6 +179,7 @@ no-mistakes axi respond --run <id> --action approve
 no-mistakes axi logs --step review --full
 no-mistakes axi abort
 no-mistakes axi abort --run <id>
+no-mistakes axi retry --run <id>
 ```
 
 Before any post-pipeline local commit or fresh run, read `branch_sync` and follow its exact `next_action.command`.
@@ -242,7 +244,7 @@ After no-mistakes starts one, it terminates any remaining child processes when t
 Step logs record their process lifecycle, including start and exit lines with the PID, and AXI status exposes that PID while the subprocess is still active.
 Persistent server agents (Rovo Dev and OpenCode) use their managed server lifecycle instead.
 
-Transient API and network failures, stochastic prose turn endings, transient tool-call or permission validation errors, and final-text parse failures whose remedy is a fresh turn (provider protocol residue after a complete object, or a split answer the parser could not fuse) are retried up to three times with exponential backoff. Provider quota and free-usage-limit errors are terminal, even when a backend marks them retryable. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
+Transient API and network failures, stochastic prose turn endings, transient tool-call or permission validation errors, and final-text parse failures whose remedy is a fresh turn (provider protocol residue after a complete object, or a split answer the parser could not fuse) are retried up to three times with exponential backoff. Provider quota and free-usage-limit errors are terminal, even when a backend marks them retryable. A retry never extends the invocation's deadline: when the time left is shorter than the failed attempt took, the retry is skipped and the step fails with the original error. Retry messages are recorded as lifecycle activity for native subprocess agents, falling back to the streaming text path for direct callers that do not supply `OnLifecycle`.
 
 ## Intent extraction
 
@@ -309,7 +311,7 @@ This strict path needs Pi 0.82.0 or later (read from `pi --version`; a prereleas
 Pi applies `--no-tools` (`-nt`) and a `--tools` (`-t`) allowlist to extension tools too, so with either flag in `agent_args_override.pi` the model cannot see `no_mistakes_output`.
 Otherwise the invocation uses the prompt-inlined schema: the schema goes into the prompt and the final text response is validated with the common text fallback described above. A provider/model that refuses strict tools is retried once on that path and then stays on it for the agent's lifetime.
 The step log names which path each structured invocation ran.
-On the strict path, a run that ends without calling `no_mistakes_output` as its only final tool call is a structured-output rejection, so Review's bounded schema rerun applies.
+On the strict path, a run that ends without calling `no_mistakes_output` as its only final tool call is retried by the bounded invocation retry loop; if retries exhaust, it remains a structured-output rejection, so Review's bounded schema rerun applies. A `pi exited: ...: fetch failed` error is retried only when its stderr does not indicate authentication, access denial, or quota exhaustion; those failures remain terminal.
 Either way the adapter validates the result against the same schema, keeping required fields and the existing nullable-optional-field contract unchanged.
 The extension is invocation-scoped and works with `--no-extensions`.
 Invocations without a schema retain the ordinary final-text path.
